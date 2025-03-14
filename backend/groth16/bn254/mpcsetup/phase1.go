@@ -50,6 +50,14 @@ const (
 	DST_BETA
 )
 
+func (p *Phase1) SetParameters(params SrsCommons) {
+	p.parameters = params
+}
+
+func (p *Phase1) GetParameters() *SrsCommons {
+	return &p.parameters
+}
+
 // Contribute contributes randomness to the Phase1 object. This mutates Phase1.
 // p is trusted to be well-formed. The ReadFrom function performs such basic sanity checks.
 func (p *Phase1) Contribute() {

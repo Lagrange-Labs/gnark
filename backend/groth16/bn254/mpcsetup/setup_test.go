@@ -86,7 +86,9 @@ func testAll(t *testing.T, nbContributionsPhase1, nbContributionsPhase2 int) {
 		srsCommons = commonsRead
 	}
 
-	p2.Initialize(ccs, &srsCommons)
+	evals := p2.Initialize(ccs, &srsCommons)
+	serialized_ev := serialize(&evals)
+	deserialize(&evals, serialized_ev)
 	for i := range phase2 {
 		p2.Contribute()
 		serialized[i] = serialize(&p2)
