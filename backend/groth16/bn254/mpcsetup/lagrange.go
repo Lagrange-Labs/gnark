@@ -24,11 +24,11 @@ func lagrangeCoeffsG1(powers []curve.G1Affine, size int) []curve.G1Affine {
 	domain := fft.NewDomain(uint64(size))
 	numCPU := uint64(runtime.NumCPU())
 	maxSplits := bits.TrailingZeros64(ecc.NextPowerOfTwo(numCPU))
-
+	
 	twiddlesInv, _ := domain.TwiddlesInv()
 	difFFTG1(coeffs, twiddlesInv, 0, maxSplits, nil)
 	bitReverse(coeffs)
-
+	
 	var invBigint big.Int
 	domain.CardinalityInv.BigInt(&invBigint)
 
@@ -147,13 +147,21 @@ func difFFTG1(a []curve.G1Affine, twiddles [][]fr.Element, stage, maxSplits int,
 
 	butterflyG1(&a[0], &a[m])
 
-	var twiddle big.Int
-	for i := 1; i < m; i++ {
-		butterflyG1(&a[i], &a[i+m])
-		twiddles[stage][i].BigInt(&twiddle)
-		a[i+m].ScalarMultiplication(&a[i+m], &twiddle)
-	}
-
+	utils.Parallelize(m-1, func(start, end int) {
+		if start == 0 {
+			start = 1
+		}
+		if end >= m-1 {
+			end = m
+		}
+		var twiddle big.Int
+		for i := start; i < end; i++ {
+			butterflyG1(&a[i], &a[i+m])
+			twiddles[stage][i].BigInt(&twiddle)
+			a[i+m].ScalarMultiplication(&a[i+m], &twiddle)
+		}
+	})
+	
 	if m == 1 {
 		return
 	}
@@ -169,6 +177,7 @@ func difFFTG1(a []curve.G1Affine, twiddles [][]fr.Element, stage, maxSplits int,
 		difFFTG1(a[m:n], twiddles, nextStage, maxSplits, nil)
 	}
 }
+
 func difFFTG2(a []curve.G2Affine, twiddles [][]fr.Element, stage, maxSplits int, chDone chan struct{}) {
 	if chDone != nil {
 		defer close(chDone)
@@ -185,12 +194,20 @@ func difFFTG2(a []curve.G2Affine, twiddles [][]fr.Element, stage, maxSplits int,
 
 	butterflyG2(&a[0], &a[m])
 
-	var twiddle big.Int
-	for i := 1; i < m; i++ {
-		butterflyG2(&a[i], &a[i+m])
-		twiddles[stage][i].BigInt(&twiddle)
-		a[i+m].ScalarMultiplication(&a[i+m], &twiddle)
-	}
+	utils.Parallelize(m-1, func(start, end int) {
+		if start == 0 {
+			start = 1
+		}
+		if end >= m-1 {
+			end = m
+		}
+		var twiddle big.Int
+		for i := start; i < end; i++ {
+			butterflyG2(&a[i], &a[i+m])
+			twiddles[stage][i].BigInt(&twiddle)
+			a[i+m].ScalarMultiplication(&a[i+m], &twiddle)
+		}
+	})
 
 	if m == 1 {
 		return

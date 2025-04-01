@@ -6,7 +6,9 @@
 package mpcsetup
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/gob"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/mpcsetup"
 	"github.com/consensys/gnark/internal/utils"
@@ -203,4 +205,80 @@ func (c *SrsCommons) ReadFrom(reader io.Reader) (n int64, err error) {
 		}
 	}
 	return dec.BytesRead(), nil
+}
+
+func init() {
+    gob.Register(&Phase2Evaluations{})
+}
+
+// GobEncode custom binary encoding for Phase2Evaluations
+func (p *Phase2Evaluations) gobEncode() ([]byte, error) {
+    var buf bytes.Buffer
+    encoder := gob.NewEncoder(&buf)
+
+    if err := encoder.Encode(p.G1); err != nil {
+        return nil, err
+    }
+    if err := encoder.Encode(p.G2); err != nil {
+        return nil, err
+    }
+    if err := encoder.Encode(p.PublicAndCommitmentCommitted); err != nil {
+        return nil, err
+    }
+
+    return buf.Bytes(), nil
+}
+
+func (p *Phase2Evaluations) gobDecode(data []byte) error {
+    buf := bytes.NewBuffer(data)
+    decoder := gob.NewDecoder(buf)
+
+    if err := decoder.Decode(&p.G1); err != nil {
+        return err
+    }
+    if err := decoder.Decode(&p.G2); err != nil {
+        return err
+    }
+    if err := decoder.Decode(&p.PublicAndCommitmentCommitted); err != nil {
+        return err
+    }
+
+    return nil
+}
+
+func (evals *Phase2Evaluations) WriteTo(writer io.Writer) (int64, error) {
+	payload, err := evals.gobEncode()
+	if err != nil {
+		return -1, err
+	}
+	// write the number of bytes necessary to serialize `evals`
+	if err = binary.Write(writer, binary.BigEndian, uint64(len(payload))); err != nil {
+		return -1, err // binary.Write doesn't return the number of bytes written
+	}
+	n := 8 
+	nb, err := writer.Write(payload)
+	return int64(n+nb), err
+}
+
+
+func (evals *Phase2Evaluations) ReadFrom(reader io.Reader) (int64, error) {
+	// Read the number of bytes of `evals` serialization
+	var nb uint64
+
+	if err := binary.Read(reader, binary.BigEndian, &nb); err != nil {
+		return -1, err // binary.Read doesn't return the number of bytes read
+	}
+	n := 8 // we've definitely successfully read 8 bytes
+	payload := make([]byte, nb)
+	nb_read, err := io.ReadFull(reader, payload)
+	if err != nil {
+		return -1, err
+	}
+	n += nb_read
+	err = evals.gobDecode(payload)
+	if err != nil {
+		return -1, err
+	}
+
+	return int64(n), nil
 }

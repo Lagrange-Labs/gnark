@@ -10,6 +10,11 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math/big"
+	"runtime"
+	"slices"
+	"sync"
+
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/mpcsetup"
@@ -18,8 +23,6 @@ import (
 	"github.com/consensys/gnark/constraint"
 	cs "github.com/consensys/gnark/constraint/bn254"
 	"github.com/consensys/gnark/internal/utils"
-	"math/big"
-	"slices"
 )
 
 // Phase2Evaluations components of the circuit keys
@@ -219,6 +222,70 @@ func (p *Phase2) Initialize(r1cs *cs.R1CS, commons *SrsCommons) Phase2Evaluation
 	bA := make([]curve.G1Affine, nWires)
 	aB := make([]curve.G1Affine, nWires)
 	C := make([]curve.G1Affine, nWires)
+	evals_G1A_m := make([]sync.Mutex, nWires)
+	evals_G1B_m := make([]sync.Mutex, nWires)
+	evals_G2B_m := make([]sync.Mutex, nWires)
+	bA_m := make([]sync.Mutex, nWires)
+	aB_m := make([]sync.Mutex, nWires)
+	c_m := make([]sync.Mutex, nWires)
+	
+	nCpus := runtime.NumCPU()
+
+	type Task struct {
+		L 	constraint.LinearExpression
+		R 	constraint.LinearExpression
+		O 	constraint.LinearExpression
+		i 	int
+	}
+
+	taskCh := make(chan Task)
+	doneCh := make(chan struct{}, nCpus)
+
+	taskRoutine := func() {
+		for {
+			task, ok := <- taskCh
+			if !ok {
+				doneCh <- struct{}{}
+				return
+			}
+			// each constraint is sparse, i.e. involves a small portion of all variables.
+			// so we iterate over the variables involved and add the constraint's contribution
+			// to every variable's A, B, and C values
+			i := task.i
+			// A
+			for _, t := range task.L {
+				evals_G1A_m[t.WireID()].Lock()
+				accumulateG1(&evals.G1.A[t.WireID()], t, &coeffTau1[i])
+				evals_G1A_m[t.WireID()].Unlock()
+				bA_m[t.WireID()].Lock()
+				accumulateG1(&bA[t.WireID()], t, &coeffBetaTau1[i])
+				bA_m[t.WireID()].Unlock()
+			}
+			// B
+			for _, t := range task.R {
+				evals_G1B_m[t.WireID()].Lock()
+				accumulateG1(&evals.G1.B[t.WireID()], t, &coeffTau1[i])
+				evals_G1B_m[t.WireID()].Unlock()
+				evals_G2B_m[t.WireID()].Lock()
+				accumulateG2(&evals.G2.B[t.WireID()], t, &coeffTau2[i])
+				evals_G2B_m[t.WireID()].Unlock()
+				aB_m[t.WireID()].Lock()
+				accumulateG1(&aB[t.WireID()], t, &coeffAlphaTau1[i])
+				aB_m[t.WireID()].Unlock()
+			}
+			// C
+			for _, t := range task.O {
+				c_m[t.WireID()].Lock()
+				accumulateG1(&C[t.WireID()], t, &coeffTau1[i])
+				c_m[t.WireID()].Unlock()	
+			}
+		}
+	}
+
+	for i := 0; i < nCpus;i++ {
+		go taskRoutine()
+	}
+
 
 	i := 0
 	it := r1cs.GetR1CIterator()
@@ -226,24 +293,24 @@ func (p *Phase2) Initialize(r1cs *cs.R1CS, commons *SrsCommons) Phase2Evaluation
 		// each constraint is sparse, i.e. involves a small portion of all variables.
 		// so we iterate over the variables involved and add the constraint's contribution
 		// to every variable's A, B, and C values
-
-		// A
-		for _, t := range c.L {
-			accumulateG1(&evals.G1.A[t.WireID()], t, &coeffTau1[i])
-			accumulateG1(&bA[t.WireID()], t, &coeffBetaTau1[i])
+		task := Task {
+			L: make(constraint.LinearExpression, len(c.L)),
+			R: make(constraint.LinearExpression, len(c.R)),
+			O: make(constraint.LinearExpression, len(c.O)),
+			i: i,
 		}
-		// B
-		for _, t := range c.R {
-			accumulateG1(&evals.G1.B[t.WireID()], t, &coeffTau1[i])
-			accumulateG2(&evals.G2.B[t.WireID()], t, &coeffTau2[i])
-			accumulateG1(&aB[t.WireID()], t, &coeffAlphaTau1[i])
-		}
-		// C
-		for _, t := range c.O {
-			accumulateG1(&C[t.WireID()], t, &coeffTau1[i])
-		}
+		copy(task.L, c.L)
+		copy(task.R, c.R)
+		copy(task.O, c.O)
+		taskCh <- task
 		i++
 	}
+	close(taskCh)
+	// wait for completion of all routines
+	for i := 0; i < nCpus;i++ {
+		<- doneCh
+	}
+	close(doneCh)
 
 	// Prepare default contribution
 	_, _, g1, g2 := curve.Generators()
